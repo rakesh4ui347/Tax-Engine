@@ -1,0 +1,536 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ─── Enums ───────────────────────────────────────────────────────────────────
+
+enum UserRole {
+  SUPER_ADMIN
+  ADMIN
+  ACCOUNTANT
+  APPROVER
+  DEVELOPER
+  EMPLOYEE
+  PLATFORM_INTEGRATOR
+}
+
+enum EmployeeType {
+  FTE
+  HOURLY
+  CONTRACTOR
+}
+
+enum PayFrequency {
+  WEEKLY
+  BIWEEKLY
+  SEMIMONTHLY
+  MONTHLY
+}
+
+enum FilingStatus {
+  SINGLE
+  MARRIED_FILING_JOINTLY
+  MARRIED_FILING_SEPARATELY
+  HEAD_OF_HOUSEHOLD
+  QUALIFYING_WIDOW
+}
+
+enum PayrollRunStatus {
+  DRAFT
+  PENDING_APPROVAL
+  APPROVED
+  PROCESSING
+  COMPLETED
+  FAILED
+  VOIDED
+}
+
+enum TaxCodeType {
+  FIT
+  SS_EMPLOYEE
+  SS_EMPLOYER
+  MEDICARE_EMPLOYEE
+  MEDICARE_EMPLOYER
+  ADDL_MEDICARE
+  FUTA
+  SIT
+  SUI_EMPLOYEE
+  SUI_EMPLOYER
+  SDI
+  LOCAL
+  CITY
+}
+
+enum LiabilityBucket {
+  FEDERAL
+  FICA
+  FUTA
+  STATE
+  SUI
+  LOCAL
+}
+
+enum WebhookEvent {
+  PAYROLL_RUN_CREATED
+  PAYROLL_RUN_APPROVED
+  PAYROLL_RUN_COMPLETED
+  PAYROLL_RUN_FAILED
+  EMPLOYEE_CREATED
+  EMPLOYEE_UPDATED
+  TAX_FILING_SUBMITTED
+}
+
+enum WebhookStatus {
+  PENDING
+  DELIVERED
+  FAILED
+  RETRYING
+}
+
+enum FilingStatus2290 {
+  PENDING
+  SUBMITTED
+  ACCEPTED
+  REJECTED
+}
+
+// ─── Multi-tenant Core ───────────────────────────────────────────────────────
+
+model Organization {
+  id               String            @id @default(uuid())
+  name             String
+  ein              String            @unique
+  addressLine1     String
+  addressLine2     String?
+  city             String
+  state            String
+  zip              String
+  phone            String?
+  email            String
+  website          String?
+  fiscalYearStart  Int               @default(1)
+  createdAt        DateTime          @default(now())
+  updatedAt        DateTime          @updatedAt
+  deletedAt        DateTime?
+
+  companies        Company[]
+  users            User[]
+  apiKeys          ApiKey[]
+  partnerApiKeys   PartnerApiKey[]
+}
+
+model Company {
+  id               String            @id @default(uuid())
+  organizationId   String
+  name             String
+  ein              String            @unique
+  addressLine1     String
+  addressLine2     String?
+  city             String
+  state            String
+  zip              String
+  phone            String?
+  email            String
+  payFrequency     PayFrequency      @default(BIWEEKLY)
+  nextPayDate      DateTime?
+  createdAt        DateTime          @default(now())
+  updatedAt        DateTime          @updatedAt
+  deletedAt        DateTime?
+
+  organization     Organization      @relation(fields: [organizationId], references: [id])
+  employees        Employee[]
+  payrollRuns      PayrollRun[]
+  companyStates    CompanyState[]
+  taxLiabilities   TaxLiability[]
+  webhooks         Webhook[]
+  users            UserCompany[]
+}
+
+model CompanyState {
+  id                    String   @id @default(uuid())
+  companyId             String
+  state                 String
+  suiAccountNumber      String?
+  suiRate               Decimal  @default(0) @db.Decimal(8,6)
+  filingFrequency       String   @default("QUARTERLY")
+  registeredAt          DateTime @default(now())
+  effectiveFrom         DateTime @default(now())
+  effectiveTo           DateTime?
+
+  company   Company @relation(fields: [companyId], references: [id])
+
+  @@unique([companyId, state])
+}
+
+// ─── Users & Auth ────────────────────────────────────────────────────────────
+
+model User {
+  id             String      @id @default(uuid())
+  organizationId String?
+  email          String      @unique
+  passwordHash   String
+  firstName      String
+  lastName       String
+  role           UserRole    @default(EMPLOYEE)
+  isActive       Boolean     @default(true)
+  lastLoginAt    DateTime?
+  createdAt      DateTime    @default(now())
+  updatedAt      DateTime    @updatedAt
+
+  organization   Organization? @relation(fields: [organizationId], references: [id])
+  companies      UserCompany[]
+  apiKeys        ApiKey[]
+  auditLogs      AuditLog[]
+  approvals      PayrollApproval[]
+}
+
+model UserCompany {
+  userId    String
+  companyId String
+  role      UserRole
+
+  user    User    @relation(fields: [userId], references: [id])
+  company Company @relation(fields: [companyId], references: [id])
+
+  @@id([userId, companyId])
+}
+
+model ApiKey {
+  id             String    @id @default(uuid())
+  organizationId String
+  userId         String
+  name           String
+  keyHash        String    @unique
+  keyPrefix      String
+  scopes         String[]  @default([])
+  isActive       Boolean   @default(true)
+  lastUsedAt     DateTime?
+  expiresAt      DateTime?
+  createdAt      DateTime  @default(now())
+
+  organization   Organization @relation(fields: [organizationId], references: [id])
+  user           User         @relation(fields: [userId], references: [id])
+}
+
+// ─── Employees ───────────────────────────────────────────────────────────────
+
+model Employee {
+  id               String       @id @default(uuid())
+  companyId        String
+  employeeNumber   String
+  firstName        String
+  lastName         String
+  middleName       String?
+  ssn              String
+  dateOfBirth      DateTime
+  hireDate         DateTime
+  terminationDate  DateTime?
+  email            String
+  phone            String?
+  addressLine1     String
+  addressLine2     String?
+  city             String
+  state            String
+  zip              String
+  employeeType     EmployeeType @default(FTE)
+  annualSalary     Decimal?     @db.Decimal(14,2)
+  payFrequency     PayFrequency?
+  hourlyRate       Decimal?     @db.Decimal(10,4)
+  defaultHours     Decimal?     @db.Decimal(6,2) @default(80)
+  overtimeEligible Boolean      @default(false)
+  residentState    String
+  workState        String
+  isActive         Boolean      @default(true)
+  createdAt        DateTime     @default(now())
+  updatedAt        DateTime     @updatedAt
+
+  company          Company      @relation(fields: [companyId], references: [id])
+  w4Profile        W4Profile?
+  payStubs         PayStub[]
+  deductions       EmployeeDeduction[]
+
+  @@unique([companyId, employeeNumber])
+}
+
+model W4Profile {
+  id                     String       @id @default(uuid())
+  employeeId             String       @unique
+  taxYear                Int
+  filingStatus           FilingStatus @default(SINGLE)
+  multipleJobs           Boolean      @default(false)
+  claimDependents        Decimal      @default(0) @db.Decimal(12,2)
+  otherIncome            Decimal      @default(0) @db.Decimal(12,2)
+  deductionsAmount       Decimal      @default(0) @db.Decimal(12,2)
+  additionalWithholding  Decimal      @default(0) @db.Decimal(10,2)
+  exemptFromFIT          Boolean      @default(false)
+  exemptFromFICA         Boolean      @default(false)
+  stateFilingStatus      String?
+  stateAllowances        Int          @default(0)
+  stateAdditionalWH      Decimal      @default(0) @db.Decimal(10,2)
+  effectiveDate          DateTime     @default(now())
+  createdAt              DateTime     @default(now())
+  updatedAt              DateTime     @updatedAt
+
+  employee Employee @relation(fields: [employeeId], references: [id])
+}
+
+model EmployeeDeduction {
+  id              String   @id @default(uuid())
+  employeeId      String
+  code            String
+  description     String
+  amount          Decimal? @db.Decimal(10,2)
+  percentage      Decimal? @db.Decimal(6,4)
+  preTax          Boolean  @default(true)
+  employeeShare   Decimal  @default(1) @db.Decimal(4,3)
+  employerShare   Decimal  @default(0) @db.Decimal(4,3)
+  effectiveFrom   DateTime @default(now())
+  effectiveTo     DateTime?
+  isActive        Boolean  @default(true)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  employee Employee @relation(fields: [employeeId], references: [id])
+}
+
+// ─── Payroll ──────────────────────────────────────────────────────────────────
+
+model PayrollRun {
+  id              String           @id @default(uuid())
+  companyId       String
+  periodStart     DateTime
+  periodEnd       DateTime
+  payDate         DateTime
+  payFrequency    PayFrequency
+  status          PayrollRunStatus @default(DRAFT)
+  totalGross      Decimal          @default(0) @db.Decimal(14,2)
+  totalNet        Decimal          @default(0) @db.Decimal(14,2)
+  totalTax        Decimal          @default(0) @db.Decimal(14,2)
+  totalDeductions Decimal          @default(0) @db.Decimal(14,2)
+  idempotencyKey  String?          @unique
+  processedAt     DateTime?
+  createdAt       DateTime         @default(now())
+  updatedAt       DateTime         @updatedAt
+
+  company         Company          @relation(fields: [companyId], references: [id])
+  payStubs        PayStub[]
+  approvals       PayrollApproval[]
+  taxLiabilities  TaxLiability[]
+}
+
+model PayStub {
+  id               String   @id @default(uuid())
+  payrollRunId     String
+  employeeId       String
+  grossPay         Decimal  @db.Decimal(14,2)
+  netPay           Decimal  @db.Decimal(14,2)
+  regularPay       Decimal  @db.Decimal(14,2)
+  overtimePay      Decimal  @default(0) @db.Decimal(14,2)
+  bonusPay         Decimal  @default(0) @db.Decimal(14,2)
+  totalEmployeeTax Decimal  @db.Decimal(14,2)
+  totalEmployerTax Decimal  @db.Decimal(14,2)
+  totalDeductions  Decimal  @db.Decimal(14,2)
+  ytdGross         Decimal  @db.Decimal(14,2)
+  ytdTax           Decimal  @db.Decimal(14,2)
+  ytdNet           Decimal  @db.Decimal(14,2)
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  payrollRun     PayrollRun      @relation(fields: [payrollRunId], references: [id])
+  employee       Employee        @relation(fields: [employeeId], references: [id])
+  taxLines       TaxLine[]
+  deductionLines DeductionLine[]
+
+  @@unique([payrollRunId, employeeId])
+}
+
+model TaxLine {
+  id              String          @id @default(uuid())
+  payStubId       String
+  taxCode         TaxCodeType
+  taxYear         Int
+  description     String
+  taxableWage     Decimal         @db.Decimal(14,2)
+  amount          Decimal         @db.Decimal(14,2)
+  isEmployee      Boolean         @default(true)
+  liabilityBucket LiabilityBucket
+  state           String?
+  locality        String?
+  createdAt       DateTime        @default(now())
+
+  payStub PayStub @relation(fields: [payStubId], references: [id])
+}
+
+model DeductionLine {
+  id          String   @id @default(uuid())
+  payStubId   String
+  code        String
+  description String
+  amount      Decimal  @db.Decimal(14,2)
+  preTax      Boolean  @default(true)
+  createdAt   DateTime @default(now())
+
+  payStub PayStub @relation(fields: [payStubId], references: [id])
+}
+
+model TaxLiability {
+  id              String           @id @default(uuid())
+  companyId       String
+  payrollRunId    String?
+  taxCode         TaxCodeType
+  taxYear         Int
+  period          String
+  state           String?
+  locality        String?
+  amount          Decimal          @db.Decimal(14,2)
+  liabilityBucket LiabilityBucket
+  dueDate         DateTime?
+  paidAt          DateTime?
+  filingStatus    FilingStatus2290 @default(PENDING)
+  createdAt       DateTime         @default(now())
+  updatedAt       DateTime         @updatedAt
+
+  company    Company     @relation(fields: [companyId], references: [id])
+  payrollRun PayrollRun? @relation(fields: [payrollRunId], references: [id])
+
+  @@unique([companyId, payrollRunId, taxCode, state, locality])
+}
+
+model PayrollApproval {
+  id           String           @id @default(uuid())
+  payrollRunId String
+  approverId   String
+  status       PayrollRunStatus
+  notes        String?
+  approvedAt   DateTime         @default(now())
+
+  payrollRun PayrollRun @relation(fields: [payrollRunId], references: [id])
+  approver   User       @relation(fields: [approverId], references: [id])
+}
+
+// ─── Tax Engine Supporting Data ───────────────────────────────────────────────
+
+model StateReciprocityAgreement {
+  id            String   @id @default(uuid())
+  fromState     String
+  toState       String
+  effectiveFrom DateTime
+  effectiveTo   DateTime?
+  notes         String?
+  createdAt     DateTime @default(now())
+
+  @@unique([fromState, toState, effectiveFrom])
+}
+
+model StateTaxConfig {
+  id                String   @id @default(uuid())
+  state             String
+  taxYear           Int
+  standardDeduction Decimal  @db.Decimal(12,2)
+  personalExemption Decimal  @default(0) @db.Decimal(12,2)
+  brackets          Json
+  supplementalRate  Decimal  @db.Decimal(6,4)
+  suiWageBase       Decimal  @db.Decimal(12,2)
+  sdiRate           Decimal? @db.Decimal(6,4)
+  hasSIT            Boolean  @default(true)
+  createdAt         DateTime @default(now())
+
+  @@unique([state, taxYear])
+}
+
+model FederalTaxConfig {
+  id                              String   @id @default(uuid())
+  taxYear                         Int      @unique
+  ssWageBase                      Decimal  @db.Decimal(12,2)
+  ssRate                          Decimal  @db.Decimal(6,4)
+  medicareRate                    Decimal  @db.Decimal(6,4)
+  additionalMedicareRate          Decimal  @db.Decimal(6,4)
+  additionalMedicareThreshold     Decimal  @db.Decimal(12,2)
+  futaRate                        Decimal  @db.Decimal(6,4)
+  futaWageBase                    Decimal  @db.Decimal(12,2)
+  futaCreditReduction             Decimal  @default(0) @db.Decimal(6,4)
+  standardDeductionSingle         Decimal  @db.Decimal(12,2)
+  standardDeductionMFJ            Decimal  @db.Decimal(12,2)
+  standardDeductionHOH            Decimal  @db.Decimal(12,2)
+  brackets                        Json
+  supplementalRate                Decimal  @db.Decimal(6,4)
+  createdAt                       DateTime @default(now())
+}
+
+// ─── Webhooks ─────────────────────────────────────────────────────────────────
+
+model Webhook {
+  id        String         @id @default(uuid())
+  companyId String
+  url       String
+  events    WebhookEvent[]
+  secret    String
+  isActive  Boolean        @default(true)
+  createdAt DateTime       @default(now())
+  updatedAt DateTime       @updatedAt
+
+  company    Company          @relation(fields: [companyId], references: [id])
+  deliveries WebhookDelivery[]
+}
+
+model WebhookDelivery {
+  id             String        @id @default(uuid())
+  webhookId      String
+  event          WebhookEvent
+  payload        Json
+  idempotencyKey String        @unique
+  status         WebhookStatus @default(PENDING)
+  attempts       Int           @default(0)
+  lastAttemptAt  DateTime?
+  responseCode   Int?
+  responseBody   String?
+  nextRetryAt    DateTime?
+  createdAt      DateTime      @default(now())
+
+  webhook Webhook @relation(fields: [webhookId], references: [id])
+}
+
+// ─── Partner API Keys ─────────────────────────────────────────────────────────
+// Machine-to-machine keys for platform integrators / embedders
+
+model PartnerApiKey {
+  id             String    @id @default(uuid())
+  organizationId String
+  name           String
+  description    String?
+  keyHash        String    @unique
+  keyPrefix      String
+  scopes         String[]  @default([])
+  environment    String    @default("live")   // "live" | "test"
+  allowedIps     String[]  @default([])       // empty = allow all
+  requestCount   Int       @default(0)
+  isActive       Boolean   @default(true)
+  lastUsedAt     DateTime?
+  expiresAt      DateTime?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id])
+}
+
+// ─── Audit ────────────────────────────────────────────────────────────────────
+
+model AuditLog {
+  id         String   @id @default(uuid())
+  userId     String?
+  action     String
+  resource   String
+  resourceId String?
+  oldValue   Json?
+  newValue   Json?
+  ipAddress  String?
+  userAgent  String?
+  createdAt  DateTime @default(now())
+
+  user User? @relation(fields: [userId], references: [id])
+}
